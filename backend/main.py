@@ -1,18 +1,11 @@
 """
-🚀 Language Mirror Pro - Production Backend
-============================================
-FastAPI backend with:
-- REST API for conversations
-- WebSocket for real-time chat
-- Text-to-Speech integration
-- Model inference
-- Session management
+🚀 Language Mirror Pro - Production Backend with Trained Model
+==============================================================
+FastAPI backend using the custom trained 76.9M parameter model.
 """
 
 import os
 import sys
-import json
-import asyncio
 import uuid
 import random
 from datetime import datetime
@@ -22,16 +15,14 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, File, UploadFile
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
-import torch
 
-# Import our models
-from ai_core.models.transformer import LanguageMirrorPro, ModelConfig
-from ai_core.models.tokenizer import LanguageMirrorTokenizer
+# Import the trained model inference
+from model_inference import LanguageMirrorInference, SimpleTokenizer
 
 # Import TTS
 try:
@@ -45,18 +36,6 @@ except ImportError:
 
 
 # ============================================================================
-# CONFIGURATION
-# ============================================================================
-
-class AppConfig:
-    MODEL_PATH = os.getenv("MODEL_PATH", "checkpoints/best_model.pt")
-    DEVICE = os.getenv("DEVICE", "cpu")
-    MAX_LENGTH = 256
-    TEMPERATURE = 0.7
-    TOP_P = 0.9
-
-
-# ============================================================================
 # PYDANTIC MODELS
 # ============================================================================
 
@@ -65,7 +44,6 @@ class ConversationRequest(BaseModel):
     language: str = Field(default="italian", description="Target language")
     dialect: Optional[str] = Field(default=None, description="Regional dialect")
     scenario: Optional[str] = Field(default="general", description="Conversation scenario")
-    proficiency: Optional[List[float]] = Field(default=None, description="Proficiency vector")
     session_id: Optional[str] = Field(default=None, description="Session ID for context")
 
 
@@ -74,292 +52,56 @@ class ConversationResponse(BaseModel):
     translation: str
     grammar_feedback: Optional[str] = None
     pronunciation_score: Optional[float] = None
-    pronunciation_feedback: Optional[str] = None
     suggested_responses: List[str] = []
-    difficulty_adjustment: Optional[str] = None
     session_id: str
     audio: Optional[str] = None
-
-
-class LanguageInfo(BaseModel):
-    code: str
-    name: str
-    dialects: List[str]
-    available: bool
+    model_source: str = "trained_model"
 
 
 class HealthResponse(BaseModel):
     status: str
     model_loaded: bool
-    version: str
-    device: str
-    timestamp: str
+    model_params: str
     tts_available: bool
+    version: str
+    timestamp: str
 
 
 # ============================================================================
-# LANGUAGE DATA - Full support for all languages
+# LANGUAGE CONFIG
 # ============================================================================
 
-SUPPORTED_LANGUAGES = {
+LANGUAGE_CONFIG = {
     "italian": {
         "name": "Italian",
-        "dialects": ["standard", "sicilian", "roman", "milanese", "neapolitan"],
-        "responses": {
-            "greeting": [
-                ("Ciao! Come stai oggi? Sono qui per aiutarti a imparare l'italiano.", 
-                 "Hello! How are you today? I'm here to help you learn Italian."),
-                ("Buongiorno! Pronto per la nostra lezione?",
-                 "Good morning! Ready for our lesson?"),
-                ("Benvenuto! Iniziamo a praticare l'italiano insieme!",
-                 "Welcome! Let's start practicing Italian together!"),
-            ],
-            "encouragement": [
-                ("Ottimo lavoro! Stai facendo progressi fantastici!", 
-                 "Great job! You're making fantastic progress!"),
-                ("Benissimo! La tua pronuncia sta migliorando molto!",
-                 "Very good! Your pronunciation is improving a lot!"),
-                ("Eccellente! Sei sulla strada giusta!",
-                 "Excellent! You're on the right track!"),
-                ("Bravissimo! Continua così!",
-                 "Very well done! Keep it up!"),
-                ("Perfetto! Stai imparando velocemente!",
-                 "Perfect! You're learning quickly!"),
-            ],
-            "question": [
-                ("Che cosa ti piace fare nel tempo libero?",
-                 "What do you like to do in your free time?"),
-                ("Raccontami della tua giornata.",
-                 "Tell me about your day."),
-                ("Hai mai viaggiato in Italia? Dove vorresti andare?",
-                 "Have you ever traveled to Italy? Where would you like to go?"),
-                ("Qual è il tuo cibo italiano preferito?",
-                 "What's your favorite Italian food?"),
-                ("Come ti chiami e da dove vieni?",
-                 "What's your name and where are you from?"),
-            ],
-            "fallback": [
-                ("Interessante! Continua così!",
-                 "Interesting! Keep going!"),
-                ("Capisco! Dimmi di più.",
-                 "I understand! Tell me more."),
-                ("Bene! Cosa vuoi dire adesso?",
-                 "Good! What do you want to say now?"),
-            ],
-        },
-        "common_errors": {
-            "io sono fame": {"correct": "Ho fame", "explanation": "In Italian, we use 'avere' (to have) for hunger, not 'essere' (to be)."},
-            "io sono 25 anni": {"correct": "Ho 25 anni", "explanation": "For age, use 'avere' (to have), not 'essere' (to be)."},
-        },
-        "suggestions": ["Grazie mille!", "Come si dice...?", "Può ripetere?", "Non capisco", "Perfetto!"]
+        "dialects": ["standard", "sicilian", "roman", "milanese"],
+        "suggestions": ["Grazie!", "Come si dice...?", "Non capisco", "Perfetto!"],
     },
-    
     "japanese": {
-        "name": "Japanese",
-        "dialects": ["standard", "osaka", "kyoto", "hokkaido"],
-        "responses": {
-            "greeting": [
-                ("こんにちは！今日も日本語を勉強しましょう！", 
-                 "Hello! Let's study Japanese today too!"),
-                ("ようこそ！日本語の練習を始めましょう！",
-                 "Welcome! Let's start practicing Japanese!"),
-                ("はじめまして！私はあなたの日本語の先生です。",
-                 "Nice to meet you! I'm your Japanese teacher."),
-            ],
-            "encouragement": [
-                ("すごいですね！上手になっています！", 
-                 "That's amazing! You're getting better!"),
-                ("よくできました！その調子で頑張ってください！",
-                 "Well done! Keep up the good work!"),
-                ("素晴らしい！発音がとても良くなりましたね！",
-                 "Wonderful! Your pronunciation has really improved!"),
-                ("完璧です！日本語が上手ですね！",
-                 "Perfect! Your Japanese is good!"),
-                ("いい感じ！続けてください！",
-                 "Looking good! Please continue!"),
-            ],
-            "question": [
-                ("趣味は何ですか？",
-                 "What are your hobbies?"),
-                ("日本に行ったことがありますか？",
-                 "Have you ever been to Japan?"),
-                ("好きな日本の食べ物は何ですか？",
-                 "What's your favorite Japanese food?"),
-                ("今日は何をしましたか？",
-                 "What did you do today?"),
-                ("お名前は何ですか？",
-                 "What is your name?"),
-            ],
-            "fallback": [
-                ("面白いですね！続けてください！",
-                 "That's interesting! Please continue!"),
-                ("なるほど！もっと教えてください。",
-                 "I see! Tell me more."),
-                ("いいですね！次は何を話しましょうか？",
-                 "Nice! What shall we talk about next?"),
-            ],
-        },
-        "common_errors": {},
-        "suggestions": ["ありがとうございます", "もう一度お願いします", "わかりません", "すみません", "はい、わかりました"]
+        "name": "Japanese", 
+        "dialects": ["standard", "osaka", "kyoto"],
+        "suggestions": ["ありがとう", "もう一度", "わかりません", "すごい!"],
     },
-    
     "spanish": {
         "name": "Spanish",
-        "dialects": ["castilian", "mexican", "argentinian", "colombian"],
-        "responses": {
-            "greeting": [
-                ("¡Hola! ¿Cómo estás hoy? ¡Vamos a practicar español!", 
-                 "Hello! How are you today? Let's practice Spanish!"),
-                ("¡Bienvenido! ¡Empecemos nuestra lección de español!",
-                 "Welcome! Let's start our Spanish lesson!"),
-                ("¡Buenos días! ¿Listo para aprender español?",
-                 "Good morning! Ready to learn Spanish?"),
-            ],
-            "encouragement": [
-                ("¡Muy bien! ¡Estás progresando mucho!", 
-                 "Very good! You're progressing a lot!"),
-                ("¡Excelente trabajo! Tu español está mejorando.",
-                 "Excellent work! Your Spanish is improving."),
-                ("¡Fantástico! ¡Sigue así!",
-                 "Fantastic! Keep it up!"),
-                ("¡Perfecto! Tu pronunciación es muy buena.",
-                 "Perfect! Your pronunciation is very good."),
-                ("¡Increíble! ¡Aprendes muy rápido!",
-                 "Incredible! You learn very fast!"),
-            ],
-            "question": [
-                ("¿Qué te gusta hacer en tu tiempo libre?",
-                 "What do you like to do in your free time?"),
-                ("¿Has visitado algún país hispanohablante?",
-                 "Have you visited any Spanish-speaking country?"),
-                ("¿Cuál es tu comida favorita?",
-                 "What's your favorite food?"),
-                ("Cuéntame sobre tu día.",
-                 "Tell me about your day."),
-                ("¿Cómo te llamas y de dónde eres?",
-                 "What's your name and where are you from?"),
-            ],
-            "fallback": [
-                ("¡Interesante! ¡Continúa!",
-                 "Interesting! Continue!"),
-                ("¡Entiendo! Cuéntame más.",
-                 "I understand! Tell me more."),
-                ("¡Bien! ¿Qué más quieres decir?",
-                 "Good! What else do you want to say?"),
-            ],
-        },
-        "common_errors": {
-            "yo soy caliente": {"correct": "Tengo calor", "explanation": "'Soy caliente' means something else! Use 'tengo calor' for feeling hot."},
-        },
-        "suggestions": ["¡Gracias!", "¿Puede repetir?", "No entiendo", "¿Cómo se dice...?", "¡Perfecto!"]
+        "dialects": ["castilian", "mexican", "argentinian"],
+        "suggestions": ["¡Gracias!", "¿Cómo se dice...?", "No entiendo", "¡Perfecto!"],
     },
-    
     "french": {
         "name": "French",
-        "dialects": ["parisian", "quebec", "belgian", "swiss"],
-        "responses": {
-            "greeting": [
-                ("Bonjour! Comment allez-vous? Pratiquons le français ensemble!", 
-                 "Hello! How are you? Let's practice French together!"),
-                ("Bienvenue! Commençons notre leçon de français!",
-                 "Welcome! Let's start our French lesson!"),
-                ("Salut! Prêt à apprendre le français aujourd'hui?",
-                 "Hi! Ready to learn French today?"),
-            ],
-            "encouragement": [
-                ("Très bien! Vous faites de grands progrès!",
-                 "Very good! You're making great progress!"),
-                ("Excellent travail! Votre français s'améliore!",
-                 "Excellent work! Your French is improving!"),
-                ("Magnifique! Continuez comme ça!",
-                 "Magnificent! Keep it up!"),
-                ("Parfait! Votre prononciation est très bonne!",
-                 "Perfect! Your pronunciation is very good!"),
-                ("Bravo! Vous apprenez vite!",
-                 "Bravo! You're learning quickly!"),
-            ],
-            "question": [
-                ("Qu'est-ce que vous aimez faire pendant votre temps libre?",
-                 "What do you like to do in your free time?"),
-                ("Avez-vous déjà visité la France?",
-                 "Have you ever visited France?"),
-                ("Quelle est votre nourriture préférée?",
-                 "What's your favorite food?"),
-                ("Parlez-moi de votre journée.",
-                 "Tell me about your day."),
-                ("Comment vous appelez-vous?",
-                 "What's your name?"),
-            ],
-            "fallback": [
-                ("Intéressant! Continuez!",
-                 "Interesting! Continue!"),
-                ("Je comprends! Dites-m'en plus.",
-                 "I understand! Tell me more."),
-                ("Bien! Que voulez-vous dire maintenant?",
-                 "Good! What do you want to say now?"),
-            ],
-        },
-        "common_errors": {
-            "je suis chaud": {"correct": "J'ai chaud", "explanation": "Use 'avoir chaud' (to have heat) not 'être chaud' for feeling hot."},
-        },
-        "suggestions": ["Merci beaucoup!", "Pouvez-vous répéter?", "Je ne comprends pas", "Comment dit-on...?", "C'est parfait!"]
+        "dialects": ["parisian", "quebec", "belgian"],
+        "suggestions": ["Merci!", "Comment dit-on...?", "Je ne comprends pas", "Parfait!"],
     },
-    
     "german": {
         "name": "German",
-        "dialects": ["standard", "bavarian", "austrian", "swiss"],
-        "responses": {
-            "greeting": [
-                ("Hallo! Wie geht es Ihnen? Lass uns Deutsch üben!", 
-                 "Hello! How are you? Let's practice German!"),
-                ("Willkommen! Beginnen wir mit unserer Deutschstunde!",
-                 "Welcome! Let's start our German lesson!"),
-                ("Guten Tag! Bereit, Deutsch zu lernen?",
-                 "Good day! Ready to learn German?"),
-            ],
-            "encouragement": [
-                ("Sehr gut! Sie machen große Fortschritte!",
-                 "Very good! You're making great progress!"),
-                ("Ausgezeichnet! Ihr Deutsch wird besser!",
-                 "Excellent! Your German is getting better!"),
-                ("Wunderbar! Weiter so!",
-                 "Wonderful! Keep it up!"),
-                ("Perfekt! Ihre Aussprache ist sehr gut!",
-                 "Perfect! Your pronunciation is very good!"),
-                ("Prima! Sie lernen schnell!",
-                 "Great! You're learning fast!"),
-            ],
-            "question": [
-                ("Was machen Sie gerne in Ihrer Freizeit?",
-                 "What do you like to do in your free time?"),
-                ("Waren Sie schon einmal in Deutschland?",
-                 "Have you ever been to Germany?"),
-                ("Was ist Ihr Lieblingsessen?",
-                 "What's your favorite food?"),
-                ("Erzählen Sie mir von Ihrem Tag.",
-                 "Tell me about your day."),
-                ("Wie heißen Sie?",
-                 "What's your name?"),
-            ],
-            "fallback": [
-                ("Interessant! Machen Sie weiter!",
-                 "Interesting! Keep going!"),
-                ("Ich verstehe! Erzählen Sie mehr.",
-                 "I understand! Tell me more."),
-                ("Gut! Was möchten Sie jetzt sagen?",
-                 "Good! What would you like to say now?"),
-            ],
-        },
-        "common_errors": {
-            "ich bin kalt": {"correct": "Mir ist kalt", "explanation": "Use 'mir ist kalt' (to me is cold) not 'ich bin kalt' for feeling cold."},
-        },
-        "suggestions": ["Danke schön!", "Können Sie das wiederholen?", "Ich verstehe nicht", "Wie sagt man...?", "Perfekt!"]
+        "dialects": ["standard", "bavarian", "austrian"],
+        "suggestions": ["Danke!", "Wie sagt man...?", "Ich verstehe nicht", "Perfekt!"],
     },
 }
 
 
 # ============================================================================
-# SESSION MANAGEMENT
+# SESSION MANAGEMENT  
 # ============================================================================
 
 class ConversationSession:
@@ -367,7 +109,6 @@ class ConversationSession:
         self.session_id = session_id or str(uuid.uuid4())
         self.language = language
         self.history: List[Dict] = []
-        self.proficiency = [0.3, 0.3, 0.3, 0.5, 0.2]
         self.turn_count = 0
         self.created_at = datetime.now()
     
@@ -379,144 +120,57 @@ class ConversationSession:
             "timestamp": datetime.now().isoformat()
         })
         self.turn_count += 1
-    
-    def update_proficiency(self, was_correct: bool):
-        if was_correct:
-            self.proficiency[0] = min(1.0, self.proficiency[0] + 0.02)
-            self.proficiency[1] = min(1.0, self.proficiency[1] + 0.02)
-            self.proficiency[3] = min(1.0, self.proficiency[3] + 0.03)
-        else:
-            self.proficiency[4] = min(1.0, self.proficiency[4] + 0.05)
 
 
 sessions: Dict[str, ConversationSession] = {}
 
 
 # ============================================================================
-# MODEL INFERENCE
-# ============================================================================
-
-class ModelInference:
-    def __init__(self):
-        self.model: Optional[LanguageMirrorPro] = None
-        self.tokenizer: Optional[LanguageMirrorTokenizer] = None
-        self.device = AppConfig.DEVICE
-        self.loaded = False
-    
-    def load(self, model_path: str = None):
-        """Load model and tokenizer"""
-        try:
-            self.tokenizer = LanguageMirrorTokenizer.from_pretrained()
-            
-            if model_path and os.path.exists(model_path):
-                self.model = LanguageMirrorPro.load(model_path, self.device)
-            else:
-                config = ModelConfig()
-                self.model = LanguageMirrorPro(config)
-                self.model.to(self.device)
-                print("⚠️ Using untrained model (demo mode)")
-            
-            self.model.eval()
-            self.loaded = True
-            print(f"✅ Model loaded on {self.device}")
-            
-        except Exception as e:
-            print(f"❌ Model loading failed: {e}")
-            self.loaded = False
-    
-    def generate_response(
-        self,
-        text: str,
-        language: str,
-        proficiency: List[float],
-        session: ConversationSession
-    ) -> Dict[str, Any]:
-        """Generate tutor response"""
-        lang_data = SUPPORTED_LANGUAGES.get(language, SUPPORTED_LANGUAGES["italian"])
-        
-        # Check for common errors
-        text_lower = text.lower().strip()
-        error_correction = None
-        
-        for error, correction in lang_data.get("common_errors", {}).items():
-            if error.lower() in text_lower:
-                error_correction = correction
-                break
-        
-        # Select response type
-        if session.turn_count == 0:
-            response_type = "greeting"
-        elif error_correction:
-            response_type = "correction"
-        elif session.turn_count % 4 == 0:
-            response_type = "question"
-        elif proficiency[3] < 0.4:
-            response_type = "encouragement"
-        else:
-            response_type = "encouragement" if random.random() < 0.3 else "question"
-        
-        # Get response
-        responses = lang_data.get("responses", {}).get(response_type, [])
-        if responses:
-            response, translation = random.choice(responses)
-            
-            if error_correction and "{correct}" in response:
-                response = response.format(
-                    correct=error_correction["correct"],
-                    explanation=error_correction.get("explanation", "")
-                )
-                translation = translation.format(
-                    correct=error_correction["correct"],
-                    explanation=error_correction.get("explanation", "")
-                )
-        else:
-            # Use fallback for the language
-            fallbacks = lang_data.get("responses", {}).get("fallback", [])
-            if fallbacks:
-                response, translation = random.choice(fallbacks)
-            else:
-                response = "Keep practicing!"
-                translation = "Keep practicing!"
-        
-        # Grammar feedback
-        grammar_feedback = None
-        if error_correction:
-            grammar_feedback = error_correction.get("explanation")
-        
-        # Suggestions
-        suggestions = lang_data.get("suggestions", [])[:3]
-        
-        return {
-            "tutor_response": response,
-            "translation": translation,
-            "grammar_feedback": grammar_feedback,
-            "pronunciation_score": round(random.uniform(0.6, 0.95), 2) if self.loaded else None,
-            "suggested_responses": suggestions,
-            "was_correct": error_correction is None
-        }
-
-
-inference = ModelInference()
-
-
-# ============================================================================
 # FASTAPI APP
 # ============================================================================
+
+# Global model inference instance
+model_inference: LanguageMirrorInference = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
+    global model_inference
+    
     print("🚀 Starting Language Mirror Pro API...")
-    inference.load(AppConfig.MODEL_PATH)
-    print(f"🔊 TTS Available: {TTS_READY}")
+    print("=" * 50)
+    
+    # Load trained model
+    model_path = os.getenv("MODEL_PATH", "trained_model/best_model.pt")
+    
+    # Check multiple possible paths
+    possible_paths = [
+        model_path,
+        "../trained_model/best_model.pt",
+        "models/best_model.pt",
+        "../models/best_model.pt",
+    ]
+    
+    for path in possible_paths:
+        if Path(path).exists():
+            model_path = path
+            break
+    
+    model_inference = LanguageMirrorInference(model_path)
+    
+    print(f"🔊 TTS: {'✅ Ready' if TTS_READY else '❌ Not available'}")
+    print("=" * 50)
+    
     yield
+    
     print("👋 Shutting down...")
 
 
 app = FastAPI(
     title="Language Mirror Pro API",
-    description="Custom RL-based language tutoring system with TTS",
-    version="1.0.0",
+    description="Custom 76.9M parameter language tutor model",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -538,11 +192,11 @@ async def health_check():
     """Health check endpoint"""
     return HealthResponse(
         status="healthy",
-        model_loaded=inference.loaded,
-        version="1.0.0",
-        device=AppConfig.DEVICE,
-        timestamp=datetime.now().isoformat(),
-        tts_available=TTS_READY
+        model_loaded=model_inference.loaded if model_inference else False,
+        model_params="76.9M",
+        tts_available=TTS_READY,
+        version="2.0.0",
+        timestamp=datetime.now().isoformat()
     )
 
 
@@ -550,117 +204,73 @@ async def health_check():
 async def get_languages():
     """Get supported languages"""
     languages = []
-    for code, data in SUPPORTED_LANGUAGES.items():
-        languages.append(LanguageInfo(
-            code=code,
-            name=data["name"],
-            dialects=data["dialects"],
-            available=True
-        ))
+    for code, data in LANGUAGE_CONFIG.items():
+        languages.append({
+            "code": code,
+            "name": data["name"],
+            "dialects": data["dialects"],
+            "available": True
+        })
     return {"languages": languages}
 
 
 @app.post("/api/conversation", response_model=ConversationResponse)
 async def conversation(request: ConversationRequest):
-    """Main conversation endpoint"""
+    """Main conversation endpoint using trained model"""
+    global model_inference
+    
     # Get or create session
     session_id = request.session_id
     if session_id and session_id in sessions:
         session = sessions[session_id]
     else:
-        session_id = str(uuid.uuid4())
-        session = ConversationSession(request.language, session_id)
+        session = ConversationSession(request.language)
+        session_id = session.session_id
         sessions[session_id] = session
     
-    # Get proficiency
-    proficiency = request.proficiency or session.proficiency
-    
-    # Generate response
-    result = inference.generate_response(
-        text=request.text,
+    # Generate response using trained model
+    result = model_inference.generate_response(
+        user_input=request.text,
         language=request.language,
-        proficiency=proficiency,
-        session=session
+        temperature=0.8,
+        use_model=True
     )
     
+    tutor_response = result["response"]
+    translation = result["translation"]
+    source = result["source"]
+    
     # Update session
-    session.add_turn(request.text, result["tutor_response"])
-    session.update_proficiency(result["was_correct"])
+    session.add_turn(request.text, tutor_response)
     
     # Generate audio if TTS available
     audio_base64 = None
     if TTS_READY and tts:
         try:
             audio_base64 = tts.synthesize_to_base64(
-                result["tutor_response"],
+                tutor_response,
                 request.language,
                 request.dialect or "standard"
             )
         except Exception as e:
             print(f"TTS error: {e}")
     
+    # Get suggestions
+    lang_config = LANGUAGE_CONFIG.get(request.language, LANGUAGE_CONFIG["italian"])
+    suggestions = lang_config.get("suggestions", [])[:4]
+    
+    # Pronunciation score (simulated for now)
+    pronunciation_score = round(random.uniform(0.65, 0.95), 2)
+    
     return ConversationResponse(
-        tutor_response=result["tutor_response"],
-        translation=result["translation"],
-        grammar_feedback=result["grammar_feedback"],
-        pronunciation_score=result.get("pronunciation_score"),
-        suggested_responses=result["suggested_responses"],
+        tutor_response=tutor_response,
+        translation=translation,
+        pronunciation_score=pronunciation_score,
+        suggested_responses=suggestions,
         session_id=session_id,
-        audio=audio_base64
+        audio=audio_base64,
+        model_source=source
     )
-
-
-@app.websocket("/ws/conversation/{session_id}")
-async def websocket_conversation(websocket: WebSocket, session_id: str):
-    """WebSocket for real-time conversation"""
-    await websocket.accept()
-    
-    if session_id not in sessions:
-        sessions[session_id] = ConversationSession("italian", session_id)
-    session = sessions[session_id]
-    
-    try:
-        while True:
-            data = await websocket.receive_json()
-            
-            text = data.get("text", "")
-            language = data.get("language", session.language)
-            dialect = data.get("dialect", "standard")
-            
-            result = inference.generate_response(
-                text=text,
-                language=language,
-                proficiency=session.proficiency,
-                session=session
-            )
-            
-            session.add_turn(text, result["tutor_response"])
-            session.update_proficiency(result["was_correct"])
-            
-            # Generate audio
-            audio_base64 = None
-            if TTS_READY and tts:
-                try:
-                    audio_base64 = tts.synthesize_to_base64(
-                        result["tutor_response"],
-                        language,
-                        dialect
-                    )
-                except Exception as e:
-                    print(f"TTS error: {e}")
-            
-            await websocket.send_json({
-                "tutor_response": result["tutor_response"],
-                "translation": result["translation"],
-                "grammar_feedback": result["grammar_feedback"],
-                "pronunciation_score": result.get("pronunciation_score"),
-                "suggested_responses": result["suggested_responses"],
-                "turn": session.turn_count,
-                "audio": audio_base64
-            })
-            
-    except WebSocketDisconnect:
-        print(f"WebSocket disconnected: {session_id}")
 
 
 @app.get("/api/session/{session_id}")
@@ -674,7 +284,6 @@ async def get_session(session_id: str):
         "session_id": session.session_id,
         "language": session.language,
         "turn_count": session.turn_count,
-        "proficiency": session.proficiency,
         "history": session.history
     }
 
@@ -688,30 +297,16 @@ async def delete_session(session_id: str):
 
 
 @app.post("/api/tts")
-async def text_to_speech(
-    text: str,
-    language: str = "italian",
-    dialect: str = "standard"
-):
+async def text_to_speech(text: str, language: str = "italian", dialect: str = "standard"):
     """Generate speech from text"""
     if not TTS_READY:
-        return JSONResponse(
-            status_code=501,
-            content={"error": "TTS not available. Install: pip install edge-tts"}
-        )
+        return JSONResponse(status_code=501, content={"error": "TTS not available"})
     
     try:
         audio_base64 = tts.synthesize_to_base64(text, language, dialect)
-        return {
-            "success": True,
-            "audio": audio_base64,
-            "format": "mp3"
-        }
+        return {"success": True, "audio": audio_base64, "format": "mp3"}
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 # ============================================================================
@@ -720,9 +315,4 @@ async def text_to_speech(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
