@@ -1,0 +1,23 @@
+# Language Mirror Pro - Production Dependencies
+# Voice-driven language tutor using Gemini + ElevenLabs
+
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# Google AI
+google-generativeai==0.3.2
+
+# HTTP Client (for ElevenLabs)
+httpx==0.26.0
+
+# Utilities
+pydantic==2.5.3
+python-dotenv==1.0.0
+
+# For Google Cloud deployment
+gunicorn==21.2.0
+
+# Optional: For local TTS fallback
+edge-tts==6.1.9
