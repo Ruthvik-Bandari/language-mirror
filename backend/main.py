@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 """
 🚀 Language Mirror Pro - Voice-Driven Language Tutor
 =====================================================
@@ -30,8 +33,8 @@ import httpx
 # ============================================================================
 
 # API Keys
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDecqgkr6NJBKjbwujohuPzCPnEl4G4fd4")
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "fcba80850c9e78662167a5914a0f66d4c3c05bb632829d9109a0bbc5db57ca19")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 
 # ElevenLabs voices for each language (native speakers)
 ELEVENLABS_VOICES = {
