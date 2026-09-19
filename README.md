@@ -8,7 +8,7 @@
 
 **A Custom-Built AI Language Tutor Using Reinforcement Learning**
 
-*No External APIs • 100% Custom Neural Network • Built From Scratch*
+*Custom tutor model trained from scratch • PPO reinforcement learning • Whisper ASR + edge-tts speech*
 
 [Live Demo](#demo) • [Architecture](#architecture) • [Quick Start](#quick-start) • [Technical Details](#technical-details)
 
@@ -20,11 +20,11 @@
 
 | What Others Do | What We Built |
 |----------------|---------------|
-| ❌ Wrap ChatGPT/Gemini APIs | ✅ **Custom 12M parameter Transformer** |
+| ❌ Wrap ChatGPT/Gemini APIs | ✅ **Transformer trained from scratch** (45.6M params) |
 | ❌ Simple chat interface | ✅ **Multi-task learning: Grammar + Pronunciation + Response** |
 | ❌ Static responses | ✅ **RL-trained adaptive tutoring with PPO** |
 | ❌ Generic feedback | ✅ **Pedagogically-informed reward shaping** |
-| ❌ Single language | ✅ **10 languages with dialect support** |
+| ❌ Single language | ✅ **5 languages served, 10 configured** |
 
 ---
 
@@ -43,8 +43,8 @@
 - **Pedagogically-informed rewards** based on language learning science
 
 ### 🌍 Multilingual Support
-- Italian, Japanese, Spanish, French, German
-- Portuguese, Mandarin, Korean, Arabic, Hindi
+- **Served by the backend today:** Italian, Japanese, Spanish, French, German (5)
+- **Declared in the model config but not yet exposed:** Portuguese, Mandarin, Korean, Arabic, Hindi
 - Regional dialect awareness
 
 ### ⚡ Production Ready
@@ -177,7 +177,8 @@ npm run dev
 | Component | Details |
 |-----------|---------|
 | **Architecture** | Multi-Task Transformer |
-| **Parameters** | ~12 Million |
+| **Parameters (training arch, `LanguageMirrorPro`)** | **45.6 M** (counted by instantiating the model) |
+| **Parameters (served arch, `LanguageTutorModel`)** | **76.9 M** |
 | **Encoder Layers** | 6 |
 | **Decoder Layers** | 4 |
 | **Attention Heads** | 6 |
@@ -297,6 +298,24 @@ Translation: "In Italian we say 'grazie'! Let's try together:
 ```
 
 ---
+
+## ⚠️ Known gaps
+
+Worth knowing before you read the claims above as finished work.
+
+- **No evaluation metrics are recorded.** There is no benchmark, held-out score, or learning curve
+  committed anywhere. The architecture and the training loop are real; their effectiveness is
+  unmeasured.
+- **Two different model definitions coexist.** Training uses `ai_core/models/transformer.py`
+  (`LanguageMirrorPro`, d_model 384, vocab 16,000, 45.6 M params). Serving uses
+  `backend/model_inference.py` (`LanguageTutorModel`, d_model 512, vocab 32,000, 76.9 M params) with
+  a character-level tokenizer. These are not the same network, and reconciling them is the most
+  valuable next change in this repository.
+- **Speech is not custom.** ASR is OpenAI Whisper run locally; TTS is `edge_tts`, which calls a
+  Microsoft service. Only the tutoring model is trained from scratch here.
+- **Three checkpoints totalling ~900 MB are committed to git** (`backend/best_model.pt`,
+  `backend/trained_model/*.pt`). They belong in Git LFS or release artifacts.
+- No automated test suite.
 
 ## 👥 Team
 
