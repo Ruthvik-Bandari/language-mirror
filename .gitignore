@@ -26,3 +26,9 @@ models/*.pt
 *.wav
 *.mp3
 .env
+
+# Training checkpoints — only the served weights are tracked.
+# Keep large artifacts out of git; publish them as GitHub Release assets.
+*.pt
+!backend/trained_model/model_weights.pt
+*.backup

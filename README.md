@@ -313,8 +313,10 @@ Worth knowing before you read the claims above as finished work.
   valuable next change in this repository.
 - **Speech is not custom.** ASR is OpenAI Whisper run locally; TTS is `edge_tts`, which calls a
   Microsoft service. Only the tutoring model is trained from scratch here.
-- **Three checkpoints totalling ~900 MB are committed to git** (`backend/best_model.pt`,
-  `backend/trained_model/*.pt`). They belong in Git LFS or release artifacts.
+- **Checkpoints are large.** Only the served weights are tracked
+  (`backend/trained_model/model_weights.pt`, 294 MB); eight redundant copies and epoch checkpoints
+  were removed from the tree. They remain in git history, so a clone still pulls ~2.3 GB. Purging
+  them needs a history rewrite, and future checkpoints belong in Release assets rather than git.
 - No automated test suite.
 
 ## 👥 Team
